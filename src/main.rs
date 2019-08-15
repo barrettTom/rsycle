@@ -4,6 +4,7 @@ extern crate dirs;
 use clap::{App, AppSettings::ArgRequiredElseHelp, Arg};
 use csv::{ReaderBuilder, Writer};
 use std::fs;
+use std::io;
 use std::path::{Component, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -37,102 +38,116 @@ fn main() {
         fs::create_dir(&rsyclebin).unwrap();
     }
 
-    if matches.is_present("restore") {
-        if let Some(filename) = matches.value_of("INPUT") {
-            let filename = filename.to_owned() + ".";
-            restore(rsyclebin, &filename);
+    if let Some(filename) = matches.value_of("INPUT") {
+        let path = build_path(filename).unwrap();
+        if matches.is_present("restore") {
+            restore(rsyclebin, path).unwrap();
         } else {
-            restore_cli(rsyclebin);
+            rsycle(rsyclebin, path).unwrap();
         }
     } else if matches.is_present("empty") {
-        empty(rsyclebin);
+        empty(rsyclebin).unwrap();
     } else if matches.is_present("list") {
-        list(rsyclebin);
-    } else if let Some(filename) = matches.value_of("INPUT") {
-        rsycle(rsyclebin, filename);
+        list(rsyclebin).unwrap();
+    } else if matches.is_present("restore") {
+        restore_cli(rsyclebin);
     }
 }
 
-fn log(rsyclebin: PathBuf, old_path: PathBuf, new_path: PathBuf) {
+pub fn build_path(filename: &str) -> Result<PathBuf, io::Error> {
+    let relative: PathBuf = [Component::CurDir, Component::Normal(filename.as_ref())]
+        .iter()
+        .collect();
+
+    fs::canonicalize(&relative)
+}
+
+pub fn rsycle(rsyclebin: PathBuf, old_path: PathBuf) -> Result<(), io::Error> {
+    if !old_path.exists() {
+        Err(io::Error::new(io::ErrorKind::NotFound, "File not found!"))
+    } else {
+        let new_filename = old_path.file_name().unwrap().to_str().unwrap().to_owned()
+            + "."
+            + &SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                .to_string();
+
+        let mut new_path = rsyclebin.clone();
+        new_path.push(new_filename);
+
+        log(rsyclebin, old_path.clone(), new_path.clone())?;
+        fs::rename(old_path, new_path)
+    }
+}
+
+fn log(rsyclebin: PathBuf, old_path: PathBuf, new_path: PathBuf) -> Result<(), io::Error> {
     let mut rsyclebin_log = rsyclebin.clone();
     rsyclebin_log.push(".log");
 
     let file = fs::OpenOptions::new()
         .append(true)
         .create(true)
-        .open(rsyclebin_log)
-        .unwrap();
+        .open(rsyclebin_log)?;
     let mut writer = Writer::from_writer(file);
 
-    writer
-        .write_record(&[
-            fs::canonicalize(old_path).unwrap().to_str().unwrap(),
-            new_path.to_str().unwrap(),
-        ])
-        .unwrap();
-    writer.flush().unwrap();
+    writer.write_record(&[
+        fs::canonicalize(old_path)?.to_str().unwrap(),
+        new_path.to_str().unwrap(),
+    ])?;
+    writer.flush()
 }
 
-fn rsycle(rsyclebin: PathBuf, filename: &str) {
-    let old_path: PathBuf = [Component::CurDir, Component::Normal(filename.as_ref())]
-        .iter()
+pub fn restore(rsyclebin: PathBuf, original_path: PathBuf) -> Result<(), io::Error> {
+    let current_path = most_recent_current_path(rsyclebin, original_path.clone())?;
+
+    if !original_path.exists() {
+        fs::rename(current_path, original_path)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "There is a file in the way!",
+        ))
+    }
+}
+
+pub fn most_recent_current_path(rsyclebin: PathBuf, path: PathBuf) -> Result<PathBuf, io::Error> {
+    let mut rsyclebin_log = rsyclebin.clone();
+    rsyclebin_log.push(".log");
+
+    let file = fs::OpenOptions::new().read(true).open(rsyclebin_log)?;
+
+    let mut reader = ReaderBuilder::new().has_headers(false).from_reader(file);
+
+    let path_str = path.to_str().unwrap();
+
+    let original_paths: Vec<PathBuf> = reader
+        .records()
+        .map(Result::unwrap)
+        .filter(|line| line.get(0).unwrap() == path_str)
+        .map(|line| PathBuf::from(line.get(1).unwrap()))
         .collect();
 
-    if !old_path.exists() {
-        println!("File not found!");
-        return;
-    }
-
-    let new_filename = filename.to_owned()
-        + "."
-        + &SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .to_string();
-
-    let mut new_path = rsyclebin.clone();
-    new_path.push(new_filename);
-
-    log(rsyclebin, old_path.clone(), new_path.clone());
-    fs::rename(old_path, new_path).unwrap();
-}
-
-fn restore(rsyclebin: PathBuf, filename: &str) {
-    let paths: Vec<PathBuf> = fs::read_dir(rsyclebin.clone())
-        .unwrap()
-        .map(Result::unwrap)
-        .map(|dir| dir.path())
-        .filter(|path| {
+    Ok(original_paths
+        .iter()
+        .max_by_key(|path| {
             path.file_name()
                 .unwrap()
                 .to_str()
                 .unwrap()
-                .starts_with(filename)
+                .split('.')
+                .collect::<Vec<&str>>()
+                .pop()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
         })
-        .collect();
-
-    match paths.iter().max_by_key(|path| {
-        path.file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split('.')
-            .collect::<Vec<&str>>()
-            .pop()
-            .unwrap()
-            .parse::<u64>()
-            .unwrap()
-    }) {
-        Some(latest_path) => {
-            let original_path = find_original_path(rsyclebin, latest_path.to_path_buf());
-            fs::rename(latest_path, original_path).unwrap();
-        }
-        None => println!("No file found !"),
-    }
+        .unwrap()
+        .to_path_buf())
 }
 
-fn list(rsyclebin: PathBuf) {
+pub fn list(rsyclebin: PathBuf) -> Result<(), io::Error> {
     let mut paths: Vec<PathBuf> = fs::read_dir(rsyclebin.clone())
         .unwrap()
         .map(Result::unwrap)
@@ -150,37 +165,53 @@ fn list(rsyclebin: PathBuf) {
 
         if let Some(last_point) = filename.pop() {
             if let Ok(date) = last_point.parse::<u64>() {
-                let original_path = find_original_path(rsyclebin.clone(), current_path.clone());
+                let original_path = find_original_path(rsyclebin.clone(), current_path.clone())?;
                 let date = UNIX_EPOCH + Duration::from_secs(date);
-                println!("{:?}, {:?}, {:?}", original_path, current_path, date);
+                println!(
+                    "original: {:?}, current: {:?}, date: {:?}",
+                    original_path, current_path, date
+                );
             }
         }
     }
+
+    Ok(())
 }
 
-fn find_original_path(rsyclebin: PathBuf, path: PathBuf) -> String {
+fn find_original_path(rsyclebin: PathBuf, current_path: PathBuf) -> Result<PathBuf, io::Error> {
     let mut rsyclebin_log = rsyclebin.clone();
     rsyclebin_log.push(".log");
 
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .open(rsyclebin_log)
-        .unwrap();
+    let file = fs::OpenOptions::new().read(true).open(rsyclebin_log)?;
 
     let mut reader = ReaderBuilder::new().has_headers(false).from_reader(file);
 
-    let path_str = path.to_str().unwrap();
+    let path_str = current_path.to_str().unwrap();
 
-    reader
-        .records()
-        .map(Result::unwrap)
-        .find(|line| line.get(1).unwrap() == path_str)
-        .map(|line| line.get(0).unwrap().to_string())
-        .unwrap()
+    Ok(PathBuf::from(
+        reader
+            .records()
+            .map(Result::unwrap)
+            .find(|line| line.get(1).unwrap() == path_str)
+            .map(|line| line.get(0).unwrap().to_string())
+            .unwrap(),
+    ))
 }
 
-fn empty(rsyclebin: PathBuf) {
-    fs::remove_dir_all(rsyclebin).unwrap()
+pub fn empty(rsyclebin: PathBuf) -> Result<(), io::Error> {
+    let paths: Vec<PathBuf> = fs::read_dir(rsyclebin.clone())
+        .unwrap()
+        .map(Result::unwrap)
+        .map(|dir| dir.path())
+        .collect();
+
+    for path in paths {
+        if fs::remove_file(path.clone()).is_err() {
+            fs::remove_dir_all(path)?
+        }
+    }
+
+    Ok(())
 }
 
 fn restore_cli(_rsyclebin: PathBuf) {
