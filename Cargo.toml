@@ -1,0 +1,10 @@
+[package]
+name = "rsycle"
+version = "0.1.0"
+authors = ["tombarrett"]
+edition = "2018"
+
+[dependencies]
+clap = "2.33.0"
+dirs = "2.0.2"
+csv = "1.1"
