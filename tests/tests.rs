@@ -5,10 +5,11 @@ mod tests {
     use rsycle::main::{build_path, empty, list, restore, rsycle};
     use std::fs;
     use std::path::{Component, PathBuf};
+    use std::ffi::OsStr;
 
-    fn get_rsyclebin() -> PathBuf {
+    fn gen_rsyclebin(dir_name: &str) -> PathBuf {
         let mut rsyclebin = dirs::home_dir().unwrap();
-        rsyclebin.push(".test_rsyclebin");
+        rsyclebin.push(dir_name);
         if !rsyclebin.exists() {
             fs::create_dir(&rsyclebin).unwrap();
         }
@@ -16,11 +17,12 @@ mod tests {
     }
 
     #[test]
-    fn test_rsycle() {
-        let rsyclebin = get_rsyclebin();
+    fn test_basics() {
+        test_rsycle("test_file".as_ref(), gen_rsyclebin(".test_rsyclebin"));
+        test_rsycle("../test_file_relative".as_ref(), gen_rsyclebin(".test_rsyclebin_relative"));
+    }
 
-        let filename = "test_file".as_ref();
-
+    fn test_rsycle(filename: &OsStr, rsyclebin: PathBuf) {
         let mut test_path: PathBuf = [Component::CurDir, Component::Normal(filename)]
             .iter()
             .collect();
