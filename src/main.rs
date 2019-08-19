@@ -59,7 +59,14 @@ pub fn build_path(filename: &str) -> Result<PathBuf, io::Error> {
         .iter()
         .collect();
 
-    fs::canonicalize(&relative)
+    if relative.exists() {
+        fs::canonicalize(&relative)
+    } else {
+        fs::File::create(relative.clone())?;
+        let full_path = fs::canonicalize(&relative.clone())?;
+        fs::remove_file(relative)?;
+        Ok(full_path)
+    }
 }
 
 pub fn rsycle(rsyclebin: PathBuf, old_path: PathBuf) -> Result<(), io::Error> {
@@ -148,13 +155,7 @@ pub fn most_recent_current_path(rsyclebin: PathBuf, path: PathBuf) -> Result<Pat
 }
 
 pub fn list(rsyclebin: PathBuf) -> Result<(), io::Error> {
-    let mut paths: Vec<PathBuf> = fs::read_dir(rsyclebin.clone())
-        .unwrap()
-        .map(Result::unwrap)
-        .map(|dir| dir.path())
-        .collect();
-
-    for current_path in paths.iter_mut() {
+    for current_path in all_paths(rsyclebin.clone())? {
         let mut filename: Vec<&str> = current_path
             .file_name()
             .unwrap()
@@ -186,7 +187,9 @@ fn find_original_path(rsyclebin: PathBuf, current_path: PathBuf) -> Result<PathB
 
     let mut reader = ReaderBuilder::new().has_headers(false).from_reader(file);
 
-    let path_str = current_path.to_str().unwrap();
+    let path_str = current_path
+        .to_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Cannot convert."))?;
 
     Ok(PathBuf::from(
         reader
@@ -199,19 +202,20 @@ fn find_original_path(rsyclebin: PathBuf, current_path: PathBuf) -> Result<PathB
 }
 
 pub fn empty(rsyclebin: PathBuf) -> Result<(), io::Error> {
-    let paths: Vec<PathBuf> = fs::read_dir(rsyclebin.clone())
-        .unwrap()
-        .map(Result::unwrap)
-        .map(|dir| dir.path())
-        .collect();
-
-    for path in paths {
+    for path in all_paths(rsyclebin)? {
         if fs::remove_file(path.clone()).is_err() {
             fs::remove_dir_all(path)?
         }
     }
 
     Ok(())
+}
+
+fn all_paths(rsyclebin: PathBuf) -> Result<Vec<PathBuf>, io::Error> {
+    Ok(fs::read_dir(rsyclebin.clone())?
+        .map(Result::unwrap)
+        .map(|dir| dir.path())
+        .collect())
 }
 
 fn restore_cli(_rsyclebin: PathBuf) {
